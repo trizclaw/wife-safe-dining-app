@@ -1,0 +1,335 @@
+import { RestaurantDetail, MenuItem } from "./types";
+import { computeSafetyScore, RawFactors } from "./scoring";
+
+// ── Seeded deterministic mock restaurants ──
+
+interface Seed {
+  id: string;
+  name: string;
+  cuisine: string;
+  address: string;
+  lat: number;
+  lng: number;
+  priceLevel: 1 | 2 | 3 | 4;
+  rating: number;
+  phone: string;
+  hours: string;
+  website: string;
+  factors: RawFactors;
+  confidence: number;
+  safeOptions: MenuItem[];
+  requiredModifications: string[];
+  riskNotes: string[];
+}
+
+const seeds: Seed[] = [
+  {
+    id: "ember-grill",
+    name: "Ember & Oak Grill",
+    cuisine: "American",
+    address: "812 Congress Ave, Austin TX 78701",
+    lat: 30.2685,
+    lng: -97.7433,
+    priceLevel: 3,
+    rating: 4.6,
+    phone: "(512) 555-0101",
+    hours: "11 AM – 10 PM daily",
+    website: "https://emberandoak.example.com",
+    factors: { menuTransparency: 90, customization: 85, crossContamination: 80, avoidListOverlap: 88, staffKnowledge: 82 },
+    confidence: 0.88,
+    safeOptions: [
+      { name: "Grilled Ribeye", description: "12oz USDA Choice, herb butter, roasted vegetables", safe: true },
+      { name: "Caesar Salad (modified)", description: "Romaine, house dressing, croutons — hold the parmesan croutons if nut-oil concern", safe: true, modifications: ["Request nut-free croutons"] },
+      { name: "Pan-Seared Salmon", description: "Atlantic salmon, lemon-dill sauce, asparagus", safe: true },
+    ],
+    requiredModifications: ["Confirm croutons are nut-free", "Ask for butter instead of nut-oil finish"],
+    riskNotes: ["Kitchen uses shared grill — low cross-contamination risk for allergens"],
+  },
+  {
+    id: "sakura-house",
+    name: "Sakura House",
+    cuisine: "Japanese",
+    address: "1105 E 6th St, Austin TX 78702",
+    lat: 30.2638,
+    lng: -97.7295,
+    priceLevel: 2,
+    rating: 4.3,
+    phone: "(512) 555-0102",
+    hours: "11:30 AM – 9:30 PM, closed Monday",
+    website: "https://sakurahouse.example.com",
+    factors: { menuTransparency: 55, customization: 40, crossContamination: 35, avoidListOverlap: 30, staffKnowledge: 45 },
+    confidence: 0.72,
+    safeOptions: [
+      { name: "Chicken Teriyaki", description: "Grilled chicken, teriyaki glaze, steamed rice", safe: true, modifications: ["Confirm no sesame garnish"] },
+      { name: "Vegetable Udon", description: "Thick noodles, seasonal vegetables, dashi broth", safe: true, modifications: ["Request no sesame oil"] },
+    ],
+    requiredModifications: ["No sesame oil or seeds", "No raw fish preparations", "Confirm no peanut in sauces"],
+    riskNotes: [
+      "Heavy sesame use in kitchen — high cross-contamination risk",
+      "Many dishes contain raw fish by default",
+      "Some sauces may contain peanut — always ask",
+    ],
+  },
+  {
+    id: "verde-garden",
+    name: "Verde Garden",
+    cuisine: "Mediterranean",
+    address: "400 W 2nd St, Austin TX 78701",
+    lat: 30.2651,
+    lng: -97.7482,
+    priceLevel: 2,
+    rating: 4.5,
+    phone: "(512) 555-0103",
+    hours: "10 AM – 9 PM daily",
+    website: "https://verdegarden.example.com",
+    factors: { menuTransparency: 85, customization: 90, crossContamination: 82, avoidListOverlap: 70, staffKnowledge: 78 },
+    confidence: 0.85,
+    safeOptions: [
+      { name: "Grilled Chicken Plate", description: "Herb-marinated chicken, rice pilaf, grilled vegetables", safe: true },
+      { name: "Lamb Kofta", description: "Spiced lamb, warm pita, tzatziki", safe: true },
+      { name: "Greek Salad", description: "Tomato, cucumber, olive, feta, oregano vinaigrette", safe: true },
+    ],
+    requiredModifications: ["Hold tahini/hummus (sesame)", "Confirm no pine nuts in pesto items"],
+    riskNotes: ["Tahini and sesame are staples — specify no-sesame on every order", "Some dressings may contain nut oils"],
+  },
+  {
+    id: "golden-dragon",
+    name: "Golden Dragon",
+    cuisine: "Chinese",
+    address: "9500 N Lamar Blvd, Austin TX 78753",
+    lat: 30.3570,
+    lng: -97.7195,
+    priceLevel: 1,
+    rating: 3.9,
+    phone: "(512) 555-0104",
+    hours: "11 AM – 10 PM daily",
+    website: "https://goldendragon.example.com",
+    factors: { menuTransparency: 30, customization: 35, crossContamination: 25, avoidListOverlap: 20, staffKnowledge: 30 },
+    confidence: 0.60,
+    safeOptions: [
+      { name: "Steamed White Rice", description: "Plain steamed jasmine rice", safe: true },
+      { name: "Steamed Broccoli", description: "Steamed broccoli with light soy", safe: true },
+    ],
+    requiredModifications: ["No peanut oil (used as default cooking oil)", "No added MSG", "No cashew or walnut in stir-fry"],
+    riskNotes: [
+      "Peanut oil is the primary cooking oil — very high overlap risk",
+      "MSG is standard in most dishes",
+      "Cashew chicken and walnut shrimp are menu staples — cross-contamination likely",
+      "Limited English may hamper allergy communication",
+    ],
+  },
+  {
+    id: "blue-corn",
+    name: "Blue Corn Cantina",
+    cuisine: "Tex-Mex",
+    address: "1619 S 1st St, Austin TX 78704",
+    lat: 30.2490,
+    lng: -97.7550,
+    priceLevel: 2,
+    rating: 4.4,
+    phone: "(512) 555-0105",
+    hours: "11 AM – 11 PM daily",
+    website: "https://bluecorn.example.com",
+    factors: { menuTransparency: 75, customization: 88, crossContamination: 85, avoidListOverlap: 90, staffKnowledge: 70 },
+    confidence: 0.82,
+    safeOptions: [
+      { name: "Cheese Enchiladas", description: "Corn tortillas, cheddar, red chile sauce, rice & beans", safe: true },
+      { name: "Grilled Chicken Tacos", description: "Flour tortillas, grilled chicken, pico, guacamole", safe: true },
+      { name: "Fajita Plate", description: "Beef or chicken, grilled peppers & onions, warm tortillas", safe: true },
+    ],
+    requiredModifications: ["Confirm mole sauce is nut-free (some recipes use peanut)"],
+    riskNotes: ["Mole may contain peanuts — verify before ordering", "Generally very safe cuisine for these allergens"],
+  },
+  {
+    id: "maple-hearth",
+    name: "Maple & Hearth",
+    cuisine: "Farm-to-Table",
+    address: "1500 Barton Springs Rd, Austin TX 78704",
+    lat: 30.2610,
+    lng: -97.7650,
+    priceLevel: 4,
+    rating: 4.8,
+    phone: "(512) 555-0106",
+    hours: "5 PM – 10 PM, closed Sunday & Monday",
+    website: "https://maplehearth.example.com",
+    factors: { menuTransparency: 95, customization: 92, crossContamination: 90, avoidListOverlap: 85, staffKnowledge: 95 },
+    confidence: 0.93,
+    safeOptions: [
+      { name: "Roasted Heritage Chicken", description: "Free-range, root vegetables, jus", safe: true },
+      { name: "Seared Duck Breast", description: "Cherry reduction, turnip purée, micro greens", safe: true },
+      { name: "Heirloom Tomato Salad", description: "Burrata, basil oil, aged balsamic", safe: true },
+    ],
+    requiredModifications: ["Mention nut allergy — chef will adjust garnishes", "Request no sesame in any Asian-inspired items"],
+    riskNotes: ["Rotating menu — always confirm current ingredients", "Kitchen is highly allergen-aware"],
+  },
+  {
+    id: "thai-basil",
+    name: "Thai Basil Kitchen",
+    cuisine: "Thai",
+    address: "2514 Guadalupe St, Austin TX 78705",
+    lat: 30.2910,
+    lng: -97.7425,
+    priceLevel: 2,
+    rating: 4.2,
+    phone: "(512) 555-0107",
+    hours: "11 AM – 9:30 PM daily",
+    website: "https://thaibasil.example.com",
+    factors: { menuTransparency: 50, customization: 55, crossContamination: 40, avoidListOverlap: 35, staffKnowledge: 50 },
+    confidence: 0.65,
+    safeOptions: [
+      { name: "Tom Kha Gai (modified)", description: "Coconut chicken soup — hold peanuts", safe: true, modifications: ["No peanut garnish", "No shrimp paste if possible"] },
+      { name: "Steamed Jasmine Rice", description: "Plain steamed rice", safe: true },
+    ],
+    requiredModifications: ["No peanuts in any dish", "No shrimp/shellfish", "No sesame oil", "Specify no MSG"],
+    riskNotes: [
+      "Peanuts are ubiquitous in Thai cuisine — high cross-contamination",
+      "Fish sauce and shrimp paste are common bases",
+      "Sesame oil used in several sauces",
+    ],
+  },
+  {
+    id: "nonna-rosa",
+    name: "Nonna Rosa's",
+    cuisine: "Italian",
+    address: "2000 E Cesar Chavez St, Austin TX 78702",
+    lat: 30.2575,
+    lng: -97.7250,
+    priceLevel: 3,
+    rating: 4.7,
+    phone: "(512) 555-0108",
+    hours: "5 PM – 10 PM, closed Tuesday",
+    website: "https://nonnarosas.example.com",
+    factors: { menuTransparency: 80, customization: 82, crossContamination: 78, avoidListOverlap: 82, staffKnowledge: 75 },
+    confidence: 0.84,
+    safeOptions: [
+      { name: "Margherita Pizza", description: "San Marzano tomato, fresh mozzarella, basil", safe: true },
+      { name: "Spaghetti Bolognese", description: "House-made pasta, slow-cooked meat sauce", safe: true },
+      { name: "Chicken Parmigiana", description: "Breaded chicken, marinara, mozzarella, spaghetti", safe: true },
+      { name: "Bruschetta", description: "Grilled bread, fresh tomato, garlic, basil, EVOO", safe: true },
+    ],
+    requiredModifications: ["Confirm pesto is not used (contains pine nuts)", "No almond flour in desserts"],
+    riskNotes: ["Pesto (pine nuts) is on many dishes — always specify no pesto", "Some desserts use almond flour or amaretti"],
+  },
+  {
+    id: "bbq-pit",
+    name: "Hickory Pit BBQ",
+    cuisine: "Barbecue",
+    address: "3100 S Congress Ave, Austin TX 78704",
+    lat: 30.2375,
+    lng: -97.7510,
+    priceLevel: 2,
+    rating: 4.5,
+    phone: "(512) 555-0109",
+    hours: "11 AM – sold out, Thurs–Sun",
+    website: "https://hickorypit.example.com",
+    factors: { menuTransparency: 70, customization: 60, crossContamination: 88, avoidListOverlap: 92, staffKnowledge: 65 },
+    confidence: 0.80,
+    safeOptions: [
+      { name: "Sliced Brisket", description: "14-hour oak-smoked brisket, salt & pepper rub", safe: true },
+      { name: "Pork Ribs", description: "St. Louis cut, dry rub, house sauce on side", safe: true },
+      { name: "Smoked Turkey", description: "Whole turkey breast, hickory-smoked", safe: true },
+      { name: "Coleslaw", description: "Classic creamy coleslaw", safe: true },
+    ],
+    requiredModifications: ["Check BBQ sauce ingredients (some contain peanut butter)", "Confirm sides are nut-free"],
+    riskNotes: ["BBQ is generally very allergen-safe", "Some sauces may contain peanut butter — ask for ingredients"],
+  },
+  {
+    id: "sea-salt",
+    name: "Sea Salt & Vine",
+    cuisine: "Seafood",
+    address: "360 Nueces St, Austin TX 78701",
+    lat: 30.2668,
+    lng: -97.7500,
+    priceLevel: 3,
+    rating: 4.4,
+    phone: "(512) 555-0110",
+    hours: "4 PM – 10 PM, closed Monday",
+    website: "https://seasaltvine.example.com",
+    factors: { menuTransparency: 72, customization: 70, crossContamination: 45, avoidListOverlap: 40, staffKnowledge: 68 },
+    confidence: 0.75,
+    safeOptions: [
+      { name: "Pan-Seared Halibut", description: "Fresh halibut, lemon beurre blanc, haricots verts", safe: true },
+      { name: "Grilled Swordfish", description: "Swordfish steak, herb crust, roasted potatoes", safe: true },
+    ],
+    requiredModifications: ["Absolutely no shellfish — specify on every order", "No raw fish items", "Confirm no sesame in Asian-influenced sauces"],
+    riskNotes: [
+      "Shellfish is a core menu category — very high cross-contamination risk",
+      "Raw bar is a signature feature",
+      "Kitchen handles large volumes of shellfish daily",
+    ],
+  },
+  {
+    id: "patel-spice",
+    name: "Patel's Spice Room",
+    cuisine: "Indian",
+    address: "7800 Burnet Rd, Austin TX 78757",
+    lat: 30.3400,
+    lng: -97.7380,
+    priceLevel: 2,
+    rating: 4.3,
+    phone: "(512) 555-0111",
+    hours: "11:30 AM – 10 PM daily",
+    website: "https://patelspice.example.com",
+    factors: { menuTransparency: 55, customization: 65, crossContamination: 50, avoidListOverlap: 45, staffKnowledge: 55 },
+    confidence: 0.68,
+    safeOptions: [
+      { name: "Tandoori Chicken", description: "Yogurt-marinated chicken, clay-oven roasted, basmati rice", safe: true },
+      { name: "Dal Tadka", description: "Yellow lentils, cumin-garlic tempering, naan", safe: true, modifications: ["Confirm no cashew cream"] },
+      { name: "Aloo Gobi", description: "Potato and cauliflower, turmeric, cumin", safe: true },
+    ],
+    requiredModifications: ["No cashew cream or paste (used in many curries)", "No almond garnish on biryani", "Confirm no peanut in chutneys"],
+    riskNotes: [
+      "Cashew paste is a base for many creamy curries",
+      "Ground almonds used as thickener in korma",
+      "Some chutneys contain peanuts",
+    ],
+  },
+  {
+    id: "burger-lab",
+    name: "The Burger Lab",
+    cuisine: "Burgers",
+    address: "1201 S Lamar Blvd, Austin TX 78704",
+    lat: 30.2540,
+    lng: -97.7660,
+    priceLevel: 1,
+    rating: 4.1,
+    phone: "(512) 555-0112",
+    hours: "11 AM – 10 PM daily",
+    website: "https://burgerlab.example.com",
+    factors: { menuTransparency: 72, customization: 85, crossContamination: 82, avoidListOverlap: 88, staffKnowledge: 60 },
+    confidence: 0.78,
+    safeOptions: [
+      { name: "Classic Cheeseburger", description: "Beef patty, American cheese, lettuce, tomato, pickle, brioche bun", safe: true },
+      { name: "Bacon Burger", description: "Beef patty, applewood bacon, cheddar, caramelized onion", safe: true },
+      { name: "Crispy Chicken Sandwich", description: "Fried chicken breast, slaw, pickle, mayo", safe: true },
+      { name: "Hand-Cut Fries", description: "Russet potatoes, sea salt", safe: true },
+    ],
+    requiredModifications: ["Confirm fries are not cooked in peanut oil", "No sesame seed buns if available"],
+    riskNotes: ["Sesame seed buns are default — request plain buns", "Verify frying oil is not peanut-based"],
+  },
+];
+
+function buildRestaurant(seed: Seed): RestaurantDetail {
+  return {
+    id: seed.id,
+    name: seed.name,
+    cuisine: seed.cuisine,
+    address: seed.address,
+    location: { lat: seed.lat, lng: seed.lng },
+    priceLevel: seed.priceLevel,
+    rating: seed.rating,
+    phone: seed.phone,
+    hours: seed.hours,
+    website: seed.website,
+    safetyScore: computeSafetyScore(seed.factors, seed.confidence),
+    safeOptions: seed.safeOptions,
+    requiredModifications: seed.requiredModifications,
+    riskNotes: seed.riskNotes,
+  };
+}
+
+export const RESTAURANTS: RestaurantDetail[] = seeds.map(buildRestaurant);
+
+export function getRestaurantById(id: string): RestaurantDetail | undefined {
+  return RESTAURANTS.find((r) => r.id === id);
+}
