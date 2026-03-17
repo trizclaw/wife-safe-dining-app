@@ -88,6 +88,8 @@ export default function HomePage() {
         </div>
       ) : (
         <>
+          <div className="glass rounded-xl px-4 py-2 text-xs text-muted">Auto-deploy test: update pipeline is connected ✅</div>
+
           {/* Summary bar */}
           <div className="flex items-center justify-between">
             <div>
